@@ -69,6 +69,7 @@ export default function App() {
   const mapRef = useRef<MapView>(null);
   // Bumped on every new search and on clear, so late responses from an older one are dropped.
   const requestRef = useRef(0);
+  const savedRef = useRef<Saved>(EMPTY_SAVED);
   const { height } = useWindowDimensions();
   const [keys, setKeys] = useState<ApiKeys>({ tomtom: '', google: '' });
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -79,15 +80,22 @@ export default function App() {
   const [results, setResults] = useState<Partial<Record<ProviderId, ProviderState>>>({});
   const [selected, setSelected] = useState<Selection | null>(null);
   const [notice, setNotice] = useState('');
+  // null means the route starts from the phone's current location.
+  const [startPlace, setStartPlace] = useState<Place | null>(null);
+  // Which end of the route the search box, lists and map long-press currently set.
+  const [editing, setEditing] = useState<'start' | 'destination'>('destination');
   const [saved, setSaved] = useState<Saved>(EMPTY_SAVED);
   const [searchFocused, setSearchFocused] = useState(false);
   const [favoritesOpen, setFavoritesOpen] = useState(false);
 
-  const mapPadding = { top: 140, right: 50, bottom: height * 0.45 + 40, left: 50 };
+  const mapPadding = { top: 190, right: 50, bottom: height * 0.45 + 40, left: 50 };
 
   useEffect(() => {
     loadKeys().then(setKeys);
-    loadSaved().then(setSaved);
+    loadSaved().then((loaded) => {
+      savedRef.current = loaded;
+      setSaved(loaded);
+    });
     locate()
       .then((here) =>
         mapRef.current?.animateToRegion({ ...here, latitudeDelta: 0.05, longitudeDelta: 0.05 })
@@ -126,19 +134,20 @@ export default function App() {
     if (!text) return;
     setNotice('');
     try {
-      if (suggestions.length > 0) return await go(suggestions[0]);
+      if (suggestions.length > 0) return await choose(suggestions[0]);
       const places = await searchPlaces(keys.tomtom, text, origin ?? undefined);
-      if (places.length > 0) return await go(places[0]);
+      if (places.length > 0) return await choose(places[0]);
       const [hit] = await Location.geocodeAsync(text);
       if (!hit) return setNotice('Adres bulunamadı');
-      await go({ label: text, position: { latitude: hit.latitude, longitude: hit.longitude } });
+      await choose({ label: text, position: { latitude: hit.latitude, longitude: hit.longitude } });
     } catch (e) {
       setNotice(errorMessage(e));
     }
   }
 
   function updateSaved(change: (saved: Saved) => Saved) {
-    const next = change(saved);
+    const next = change(savedRef.current);
+    savedRef.current = next;
     setSaved(next);
     persistSaved(next);
   }
@@ -173,7 +182,37 @@ export default function App() {
     ]);
   }
 
-  async function go(place: Place) {
+  function choose(place: Place, target = editing) {
+    return target === 'start' ? setStart(place) : go(place);
+  }
+
+  function setStart(place: Place | null) {
+    Keyboard.dismiss();
+    setFavoritesOpen(false);
+    setSuggestions([]);
+    setStartPlace(place);
+    setEditing('destination');
+    setQuery(destination?.label ?? '');
+    if (place) updateSaved((s) => withRecent(s, place));
+    if (destination) return go(destination, place);
+    if (place) {
+      mapRef.current?.animateToRegion({
+        ...place.position,
+        latitudeDelta: 0.05,
+        longitudeDelta: 0.05,
+      });
+    }
+  }
+
+  function toggleStartEditing() {
+    const next = editing === 'start' ? 'destination' : 'start';
+    setEditing(next);
+    setFavoritesOpen(false);
+    setSuggestions([]);
+    setQuery(next === 'start' ? '' : destination?.label ?? '');
+  }
+
+  async function go(place: Place, startFrom: Place | null = startPlace) {
     Keyboard.dismiss();
     setFavoritesOpen(false);
     updateSaved((s) => withRecent(s, place));
@@ -186,7 +225,7 @@ export default function App() {
 
     let from: LatLng;
     try {
-      from = await locate();
+      from = startFrom ? startFrom.position : await locate();
       if (request !== requestRef.current) return;
     } catch (e) {
       setResults({});
@@ -222,9 +261,9 @@ export default function App() {
   }
 
   // Destination chosen on the map (long press or dragging the pin) instead of by search.
-  async function pick(position: LatLng) {
+  async function pick(position: LatLng, target = editing) {
     let label = 'Seçilen konum';
-    setDestination({ label, position });
+    if (target === 'destination') setDestination({ label, position });
     try {
       const [address] = await Location.reverseGeocodeAsync(position);
       const parts = [address?.name, address?.street, address?.district, address?.city];
@@ -232,11 +271,11 @@ export default function App() {
     } catch {
       // Keep the generic label; the coordinates are what the route needs.
     }
-    await go({ label, position });
+    await choose({ label, position }, target);
   }
 
   function openInMapApp(route: RouteResult) {
-    const apps = mapApps(route);
+    const apps = mapApps(route, startPlace != null);
     ActionSheetIOS.showActionSheetWithOptions(
       {
         title: 'Rotayı hangi uygulamada açalım?',
@@ -253,6 +292,8 @@ export default function App() {
 
   function clear() {
     requestRef.current++;
+    setStartPlace(null);
+    setEditing('destination');
     setFavoritesOpen(false);
     Keyboard.dismiss();
     setDestination(null);
@@ -296,7 +337,16 @@ export default function App() {
               coordinate={destination.position}
               title={destination.label}
               draggable
-              onDragEnd={(e) => pick(e.nativeEvent.coordinate)}
+              onDragEnd={(e) => pick(e.nativeEvent.coordinate, 'destination')}
+            />
+          )}
+          {startPlace && (
+            <Marker
+              coordinate={startPlace.position}
+              title={`Başlangıç: ${startPlace.label}`}
+              pinColor="green"
+              draggable
+              onDragEnd={(e) => pick(e.nativeEvent.coordinate, 'start')}
             />
           )}
           {selected &&
@@ -337,10 +387,24 @@ export default function App() {
 
         <SafeAreaView style={styles.overlay} pointerEvents="box-none">
           <View>
+            <Pressable
+              style={[styles.startRow, editing === 'start' && styles.startRowActive]}
+              onPress={toggleStartEditing}
+            >
+              <Text style={styles.startLabel}>Başlangıç</Text>
+              <Text style={styles.startValue} numberOfLines={1}>
+                {startPlace?.label ?? 'Konumum'}
+              </Text>
+              <Text style={styles.refreshText}>{editing === 'start' ? 'Vazgeç' : 'Değiştir'}</Text>
+            </Pressable>
             <View style={styles.searchRow}>
               <TextInput
                 style={styles.input}
-                placeholder="Yer adı yazın veya haritaya basılı tutun"
+                placeholder={
+                  editing === 'start'
+                    ? 'Başlangıç: yazın veya haritaya basılı tutun'
+                    : 'Nereye? Yazın veya haritaya basılı tutun'
+                }
                 placeholderTextColor="#888"
                 value={query}
                 onChangeText={setQuery}
@@ -369,6 +433,11 @@ export default function App() {
                 <Text style={styles.icon}>⚙︎</Text>
               </Pressable>
             </View>
+            {editing === 'start' && (
+              <Pressable style={styles.card} onPress={() => setStart(null)}>
+                <Text style={styles.useLocation}>◎ Konumumu kullan</Text>
+              </Pressable>
+            )}
             {favoritesOpen && (
               <View style={[styles.card, { maxHeight: height * 0.5 }]}>
                 <ScrollView keyboardShouldPersistTaps="handled">
@@ -380,7 +449,7 @@ export default function App() {
                   )}
                   {saved.favorites.map((f, i) => (
                     <View key={i} style={styles.favoriteRow}>
-                      <Pressable style={styles.favoriteBody} onPress={() => go(f)}>
+                      <Pressable style={styles.favoriteBody} onPress={() => choose(f)}>
                         <Text style={styles.favoriteName}>{f.name}</Text>
                         <Text style={styles.muted} numberOfLines={1}>
                           {f.label}
@@ -396,7 +465,7 @@ export default function App() {
                   ))}
                   {recents.length > 0 && <Text style={styles.sectionTitle}>Son kullanılanlar</Text>}
                   {recents.map((place, i) => (
-                    <Pressable key={i} style={styles.suggestion} onPress={() => go(place)}>
+                    <Pressable key={i} style={styles.suggestion} onPress={() => choose(place)}>
                       <Text numberOfLines={2}>{place.label}</Text>
                     </Pressable>
                   ))}
@@ -407,7 +476,7 @@ export default function App() {
               <View style={styles.card}>
                 <Text style={styles.sectionTitle}>Son kullanılanlar</Text>
                 {recents.map((place, i) => (
-                  <Pressable key={i} style={styles.suggestion} onPress={() => go(place)}>
+                  <Pressable key={i} style={styles.suggestion} onPress={() => choose(place)}>
                     <Text numberOfLines={2}>{place.label}</Text>
                   </Pressable>
                 ))}
@@ -416,7 +485,7 @@ export default function App() {
             {suggestions.length > 0 && (
               <View style={styles.card}>
                 {suggestions.map((place, i) => (
-                  <Pressable key={i} style={styles.suggestion} onPress={() => go(place)}>
+                  <Pressable key={i} style={styles.suggestion} onPress={() => choose(place)}>
                     <Text numberOfLines={2}>{place.label}</Text>
                   </Pressable>
                 ))}
@@ -629,6 +698,21 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
   overlay: { flex: 1, justifyContent: 'space-between', padding: 12 },
   searchRow: { flexDirection: 'row', gap: 8 },
+  startRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    height: 40,
+    marginBottom: 8,
+    ...shadow,
+  },
+  startRowActive: { backgroundColor: '#e8f5e9' },
+  startLabel: { fontSize: 12, fontWeight: '700', color: '#666' },
+  startValue: { flex: 1, fontWeight: '600' },
+  useLocation: { padding: 12, color: '#1a73e8', fontWeight: '600' },
   input: {
     flex: 1,
     backgroundColor: '#fff',

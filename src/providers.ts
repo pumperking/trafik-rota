@@ -375,8 +375,9 @@ export type MapApp = { name: string; url: string };
 
 // No map app can be handed an exact path. Where the app supports it, points sampled along
 // the chosen route are passed as via points to keep it on the same roads; Apple Maps and
-// Waze only take a destination and pick their own route.
-export function mapApps(route: RouteResult): MapApp[] {
+// Waze only take a destination and pick their own route. Without a custom start the origin
+// is left out, so each app starts from the phone's current location.
+export function mapApps(route: RouteResult, customStart: boolean): MapApp[] {
   const points = route.coordinates;
   const total = pathLength(points);
   const via: LatLng[] = [];
@@ -391,11 +392,16 @@ export function mapApps(route: RouteResult): MapApp[] {
 
   const google = new URLSearchParams({ api: '1', destination: at(to), travelmode: 'driving' });
   if (via.length > 0) google.set('waypoints', via.map(at).join('|'));
+  if (customStart) google.set('origin', at(from));
 
   const yandexNavi = new URLSearchParams({
     lat_to: String(to.latitude),
     lon_to: String(to.longitude),
   });
+  if (customStart) {
+    yandexNavi.set('lat_from', String(from.latitude));
+    yandexNavi.set('lon_from', String(from.longitude));
+  }
   via.forEach((p, i) => {
     yandexNavi.set(`lat_via_${i}`, String(p.latitude));
     yandexNavi.set(`lon_via_${i}`, String(p.longitude));
@@ -403,7 +409,10 @@ export function mapApps(route: RouteResult): MapApp[] {
 
   return [
     { name: 'Google Haritalar', url: `https://www.google.com/maps/dir/?${google}` },
-    { name: 'Apple Haritalar', url: `https://maps.apple.com/?daddr=${at(to)}&dirflg=d` },
+    {
+      name: 'Apple Haritalar',
+      url: `https://maps.apple.com/?${customStart ? `saddr=${at(from)}&` : ''}daddr=${at(to)}&dirflg=d`,
+    },
     { name: 'Yandex Navigasyon', url: `yandexnavi://build_route_on_map?${yandexNavi}` },
     {
       name: 'Yandex Haritalar',
