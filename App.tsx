@@ -2,8 +2,10 @@ import { StatusBar } from 'expo-status-bar';
 import * as Location from 'expo-location';
 import { useEffect, useRef, useState } from 'react';
 import {
+  ActionSheetIOS,
   ActivityIndicator,
   Keyboard,
+  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -27,6 +29,7 @@ import {
   JAM_CATEGORY_NAMES,
   JAM_COLORS,
   LatLng,
+  mapApps,
   Place,
   PROVIDER_NAMES,
   ProviderId,
@@ -179,6 +182,22 @@ export default function App() {
     await go({ label, position });
   }
 
+  function openInMapApp(route: RouteResult) {
+    const apps = mapApps(route);
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        title: 'Rotayı hangi uygulamada açalım?',
+        options: [...apps.map((app) => app.name), 'Vazgeç'],
+        cancelButtonIndex: apps.length,
+      },
+      (index) => {
+        const app = apps[index];
+        if (!app) return;
+        Linking.openURL(app.url).catch(() => setNotice(`${app.name} açılamadı. Yüklü mü?`));
+      }
+    );
+  }
+
   function clear() {
     requestRef.current++;
     Keyboard.dismiss();
@@ -319,6 +338,14 @@ export default function App() {
                           >
                             <RouteSummary route={route} />
                             {isSelected && <JamList jams={route.jams} onPress={focus} />}
+                            {isSelected && (
+                              <Pressable
+                                style={styles.openMaps}
+                                onPress={() => openInMapApp(route)}
+                              >
+                                <Text style={styles.openMapsText}>Harita uygulamasında aç</Text>
+                              </Pressable>
+                            )}
                           </Pressable>
                         );
                       })}
@@ -532,6 +559,15 @@ const styles = StyleSheet.create({
   jamBody: { flex: 1 },
   jamName: { fontWeight: '600' },
   jamShow: { color: '#1a73e8', fontSize: 13, paddingLeft: 8 },
+  openMaps: {
+    marginTop: 10,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#1a73e8',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  openMapsText: { color: '#fff', fontWeight: '600' },
   actions: { flexDirection: 'row' },
   action: { flex: 1, padding: 12, alignItems: 'center' },
   refreshText: { color: '#1a73e8', fontWeight: '600' },

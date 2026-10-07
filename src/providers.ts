@@ -371,6 +371,48 @@ export async function appleRoutes(from: LatLng, to: LatLng): Promise<RouteResult
   });
 }
 
+export type MapApp = { name: string; url: string };
+
+// No map app can be handed an exact path. Where the app supports it, points sampled along
+// the chosen route are passed as via points to keep it on the same roads; Apple Maps and
+// Waze only take a destination and pick their own route.
+export function mapApps(route: RouteResult): MapApp[] {
+  const points = route.coordinates;
+  const total = pathLength(points);
+  const via: LatLng[] = [];
+  let travelled = 0;
+  for (let i = 1; i < points.length - 1 && via.length < 3; i++) {
+    travelled += distanceMeters(points[i - 1], points[i]);
+    if (travelled >= (total * (via.length + 1)) / 4) via.push(points[i]);
+  }
+  const at = (p: LatLng) => `${p.latitude.toFixed(6)},${p.longitude.toFixed(6)}`;
+  const from = points[0];
+  const to = points[points.length - 1];
+
+  const google = new URLSearchParams({ api: '1', destination: at(to), travelmode: 'driving' });
+  if (via.length > 0) google.set('waypoints', via.map(at).join('|'));
+
+  const yandexNavi = new URLSearchParams({
+    lat_to: String(to.latitude),
+    lon_to: String(to.longitude),
+  });
+  via.forEach((p, i) => {
+    yandexNavi.set(`lat_via_${i}`, String(p.latitude));
+    yandexNavi.set(`lon_via_${i}`, String(p.longitude));
+  });
+
+  return [
+    { name: 'Google Haritalar', url: `https://www.google.com/maps/dir/?${google}` },
+    { name: 'Apple Haritalar', url: `https://maps.apple.com/?daddr=${at(to)}&dirflg=d` },
+    { name: 'Yandex Navigasyon', url: `yandexnavi://build_route_on_map?${yandexNavi}` },
+    {
+      name: 'Yandex Haritalar',
+      url: `yandexmaps://maps.yandex.com/?rtext=${[from, ...via, to].map(at).join('~')}&rtt=auto`,
+    },
+    { name: 'Waze', url: `https://waze.com/ul?ll=${at(to)}&navigate=yes` },
+  ];
+}
+
 // --- Presentation helpers -------------------------------------------------------------------
 
 export type Verdict = { label: string; color: string };

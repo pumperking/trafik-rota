@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
 
+# A newer push replaces a build that is still running.
+concurrency:
+  group: build-ipa
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: macos-latest
