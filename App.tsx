@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
   ActivityIndicator,
+  Alert,
   Keyboard,
   Linking,
   Modal,
@@ -38,6 +39,16 @@ import {
   tomtomRoutes,
   verdict,
 } from './src/providers';
+import {
+  EMPTY_SAVED,
+  loadSaved,
+  persistSaved,
+  samePlace,
+  Saved,
+  withFavorite,
+  withoutFavorite,
+  withRecent,
+} from './src/saved';
 
 type ProviderState =
   | { status: 'loading' }
@@ -68,11 +79,15 @@ export default function App() {
   const [results, setResults] = useState<Partial<Record<ProviderId, ProviderState>>>({});
   const [selected, setSelected] = useState<Selection | null>(null);
   const [notice, setNotice] = useState('');
+  const [saved, setSaved] = useState<Saved>(EMPTY_SAVED);
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [favoritesOpen, setFavoritesOpen] = useState(false);
 
   const mapPadding = { top: 140, right: 50, bottom: height * 0.45 + 40, left: 50 };
 
   useEffect(() => {
     loadKeys().then(setKeys);
+    loadSaved().then(setSaved);
     locate()
       .then((here) =>
         mapRef.current?.animateToRegion({ ...here, latitudeDelta: 0.05, longitudeDelta: 0.05 })
@@ -122,8 +137,46 @@ export default function App() {
     }
   }
 
+  function updateSaved(change: (saved: Saved) => Saved) {
+    const next = change(saved);
+    setSaved(next);
+    persistSaved(next);
+  }
+
+  function addFavorite(place: Place) {
+    Alert.prompt(
+      'Favorilere ekle',
+      'Bu yere kısa bir ad verin (Ev, İş, Hastane...)',
+      [
+        { text: 'Vazgeç', style: 'cancel' },
+        {
+          text: 'Kaydet',
+          onPress: (name?: string) =>
+            updateSaved((s) =>
+              withFavorite(s, { ...place, name: name?.trim() || place.label.split(',')[0] })
+            ),
+        },
+      ],
+      'plain-text',
+      place.label.split(',')[0]
+    );
+  }
+
+  function removeFavorite(place: Place, name: string) {
+    Alert.alert('Favorilerden çıkarılsın mı?', name, [
+      { text: 'Vazgeç', style: 'cancel' },
+      {
+        text: 'Çıkar',
+        style: 'destructive',
+        onPress: () => updateSaved((s) => withoutFavorite(s, place)),
+      },
+    ]);
+  }
+
   async function go(place: Place) {
     Keyboard.dismiss();
+    setFavoritesOpen(false);
+    updateSaved((s) => withRecent(s, place));
     setSuggestions([]);
     setQuery(place.label);
     setDestination(place);
@@ -200,6 +253,7 @@ export default function App() {
 
   function clear() {
     requestRef.current++;
+    setFavoritesOpen(false);
     Keyboard.dismiss();
     setDestination(null);
     setResults({});
@@ -217,6 +271,10 @@ export default function App() {
     setSelected(selection);
     focus(route.coordinates);
   }
+
+  const favorite = destination && saved.favorites.find((f) => samePlace(f, destination));
+  const recents = saved.recents.filter((r) => !saved.favorites.some((f) => samePlace(f, r)));
+  const typing = query.trim().length >= 3 && query !== destination?.label;
 
   const entries = Object.entries(results) as [ProviderId, ProviderState][];
   const selectedState = selected ? results[selected.provider] : undefined;
@@ -290,7 +348,18 @@ export default function App() {
                 returnKeyType="search"
                 autoCorrect={false}
                 clearButtonMode="while-editing"
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setSearchFocused(false)}
               />
+              <Pressable
+                style={[styles.iconButton, favoritesOpen && styles.iconButtonActive]}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setFavoritesOpen(!favoritesOpen);
+                }}
+              >
+                <Text style={[styles.icon, styles.star]}>★</Text>
+              </Pressable>
               {destination && (
                 <Pressable style={styles.iconButton} onPress={clear}>
                   <Text style={styles.icon}>✕</Text>
@@ -300,6 +369,50 @@ export default function App() {
                 <Text style={styles.icon}>⚙︎</Text>
               </Pressable>
             </View>
+            {favoritesOpen && (
+              <View style={[styles.card, { maxHeight: height * 0.5 }]}>
+                <ScrollView keyboardShouldPersistTaps="handled">
+                  <Text style={styles.sectionTitle}>Favoriler</Text>
+                  {saved.favorites.length === 0 && (
+                    <Text style={styles.empty}>
+                      Henüz favori yok. Bir yer seçip alttaki ☆ Favori tuşuna basın.
+                    </Text>
+                  )}
+                  {saved.favorites.map((f, i) => (
+                    <View key={i} style={styles.favoriteRow}>
+                      <Pressable style={styles.favoriteBody} onPress={() => go(f)}>
+                        <Text style={styles.favoriteName}>{f.name}</Text>
+                        <Text style={styles.muted} numberOfLines={1}>
+                          {f.label}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        style={styles.favoriteRemove}
+                        onPress={() => removeFavorite(f, f.name)}
+                      >
+                        <Text style={styles.muted}>Sil</Text>
+                      </Pressable>
+                    </View>
+                  ))}
+                  {recents.length > 0 && <Text style={styles.sectionTitle}>Son kullanılanlar</Text>}
+                  {recents.map((place, i) => (
+                    <Pressable key={i} style={styles.suggestion} onPress={() => go(place)}>
+                      <Text numberOfLines={2}>{place.label}</Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+            {searchFocused && !favoritesOpen && !typing && recents.length > 0 && (
+              <View style={styles.card}>
+                <Text style={styles.sectionTitle}>Son kullanılanlar</Text>
+                {recents.map((place, i) => (
+                  <Pressable key={i} style={styles.suggestion} onPress={() => go(place)}>
+                    <Text numberOfLines={2}>{place.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
             {suggestions.length > 0 && (
               <View style={styles.card}>
                 {suggestions.map((place, i) => (
@@ -355,6 +468,18 @@ export default function App() {
                   <Pressable style={styles.action} onPress={() => destination && go(destination)}>
                     <Text style={styles.refreshText}>Yenile</Text>
                   </Pressable>
+                  {destination && (
+                    <Pressable
+                      style={styles.action}
+                      onPress={() =>
+                        favorite
+                          ? removeFavorite(destination, favorite.name)
+                          : addFavorite(destination)
+                      }
+                    >
+                      <Text style={styles.favoriteText}>{favorite ? '★ Favoride' : '☆ Favori'}</Text>
+                    </Pressable>
+                  )}
                   <Pressable style={styles.action} onPress={clear}>
                     <Text style={styles.clearText}>Temizle</Text>
                   </Pressable>
@@ -571,6 +696,27 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row' },
   action: { flex: 1, padding: 12, alignItems: 'center' },
   refreshText: { color: '#1a73e8', fontWeight: '600' },
+  favoriteText: { color: '#b06000', fontWeight: '600' },
+  iconButtonActive: { backgroundColor: '#fff4d6' },
+  star: { color: '#e0a100' },
+  empty: { paddingHorizontal: 12, paddingBottom: 12, color: '#666', fontSize: 13 },
+  favoriteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#ddd',
+  },
+  favoriteBody: { flex: 1, paddingHorizontal: 12, paddingVertical: 10 },
+  favoriteName: { fontWeight: '700', fontSize: 16 },
+  favoriteRemove: { paddingHorizontal: 14, paddingVertical: 14 },
+  sectionTitle: {
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 4,
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#666',
+  },
   clearText: { color: '#c5221f', fontWeight: '600' },
   settings: { padding: 20, paddingTop: 28 },
   title: { fontSize: 22, fontWeight: '700', marginBottom: 8 },
