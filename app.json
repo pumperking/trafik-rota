@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "Trafik Rota",
+    "slug": "trafik-rota",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.okay.trafikrota"
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Rotanın başlangıç noktası olarak konumunuz kullanılır."
+        }
+      ]
+    ]
+  }
+}
